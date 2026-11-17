@@ -9,6 +9,14 @@
  *
  *   keys.json  { "<keyId>": { "sha256": "<64 hex>", "label": "bobo-mac", "createdAt": "..." } }
  *
+ * Keys minted for a Workspace connection carry optional policy fields:
+ *   connectionId    the Workspace connection the key belongs to (informational)
+ *   ttlMs/expiresAt sliding expiry: the key stops verifying at expiresAt, and
+ *                   every successful handshake pushes expiresAt to now + ttlMs
+ *   singleBrowser   the first browser instance to complete hello is recorded
+ *                   as boundBrowserId; any other instance is refused
+ * Keys without these fields behave exactly as before.
+ *
  * The file is re-read on every handshake so `key.js new` / `key.js revoke`
  * take effect without a restart.
  */
@@ -55,7 +63,17 @@ function loadKeys(file = keysFile()) {
 
 function saveKeys(keys, file = keysFile()) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
+  // Handshakes now write too (binding, expiry renewal), so a reader must never
+  // see a half-written file: write a sibling and rename over the original.
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+function isExpired(entry, now = Date.now()) {
+  if (!entry || !entry.expiresAt) return false;
+  const t = Date.parse(entry.expiresAt);
+  return !Number.isFinite(t) || t <= now;
 }
 
 /**
@@ -72,17 +90,69 @@ function verifyKey(presented, keys = loadKeys()) {
   const a = Buffer.from(entry.sha256, 'hex');
   const b = Buffer.from(digest(presented), 'hex');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-  return { keyId, label: entry.label || '' };
+  if (isExpired(entry)) return null;
+  return {
+    keyId,
+    label: entry.label || '',
+    singleBrowser: entry.singleBrowser === true,
+    boundBrowserId: entry.boundBrowserId || null,
+  };
 }
 
 /** Mint a key. Returns the plaintext ONCE; only the digest is persisted. */
-function newKey({ label = '', file = keysFile() } = {}) {
+function newKey({ label = '', connectionId, ttlMs, singleBrowser = false, file = keysFile() } = {}) {
   const key = crypto.randomBytes(32).toString('hex');
   const keyId = keyIdOf(key);
   const keys = loadKeysFromFileOnly(file);
-  keys[keyId] = { sha256: digest(key), label, createdAt: new Date().toISOString() };
+  const now = Date.now();
+  const entry = { sha256: digest(key), label, createdAt: new Date(now).toISOString() };
+  if (connectionId) entry.connectionId = String(connectionId);
+  if (ttlMs) {
+    entry.ttlMs = ttlMs;
+    entry.expiresAt = new Date(now + ttlMs).toISOString();
+  }
+  if (singleBrowser) entry.singleBrowser = true;
+  keys[keyId] = entry;
   saveKeys(keys, file);
-  return { key, keyId, label };
+  return { key, keyId, label, connectionId: entry.connectionId || null, expiresAt: entry.expiresAt || null };
+}
+
+// Renewal writes at most this often per key, so a reconnect loop cannot turn
+// into a write per handshake.
+const RENEW_MIN_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Called once a browser instance has passed hello. Records the binding of a
+ * single-browser key and renews a sliding expiry. Reads the file fresh, so the
+ * first of two racing instances wins and the second sees the binding.
+ * @returns {{ok: true}|{ok: false, reason: 'bound'|'expired'}}
+ */
+function touchKey(keyId, browserId, { file = keysFile(), now = Date.now() } = {}) {
+  const keys = loadKeysFromFileOnly(file);
+  const entry = keys[keyId];
+  // Not in the file: the env shortcut key (no policy), or a key revoked since
+  // upgrade, which the next heartbeat closes. Policy keys always live here.
+  if (!entry) return { ok: true };
+  if (isExpired(entry, now)) return { ok: false, reason: 'expired' };
+  let dirty = false;
+  if (entry.singleBrowser) {
+    if (!browserId) return { ok: false, reason: 'bound' };
+    if (entry.boundBrowserId && entry.boundBrowserId !== browserId) return { ok: false, reason: 'bound' };
+    if (!entry.boundBrowserId) {
+      entry.boundBrowserId = browserId;
+      entry.boundAt = new Date(now).toISOString();
+      dirty = true;
+    }
+  }
+  if (entry.ttlMs) {
+    const next = now + entry.ttlMs;
+    if (next - Date.parse(entry.expiresAt) >= RENEW_MIN_INTERVAL_MS) {
+      entry.expiresAt = new Date(next).toISOString();
+      dirty = true;
+    }
+  }
+  if (dirty) saveKeys(keys, file);
+  return { ok: true };
 }
 
 function revokeKey(keyId, file = keysFile()) {
@@ -95,7 +165,16 @@ function revokeKey(keyId, file = keysFile()) {
 
 function listKeys(file = keysFile()) {
   const keys = loadKeysFromFileOnly(file);
-  return Object.entries(keys).map(([keyId, v]) => ({ keyId, label: v.label || '', createdAt: v.createdAt || null }));
+  return Object.entries(keys).map(([keyId, v]) => ({
+    keyId,
+    label: v.label || '',
+    createdAt: v.createdAt || null,
+    connectionId: v.connectionId || null,
+    expiresAt: v.expiresAt || null,
+    expired: isExpired(v),
+    singleBrowser: v.singleBrowser === true,
+    boundBrowserId: v.boundBrowserId || null,
+  }));
 }
 
 // Management commands must not be fooled by the env shortcut.
@@ -118,7 +197,9 @@ export {
   loadKeys,
   saveKeys,
   verifyKey,
+  isExpired,
   newKey,
+  touchKey,
   revokeKey,
   listKeys,
 };
