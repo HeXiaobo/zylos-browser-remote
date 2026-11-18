@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Connection keys for Workspace-managed browser access: `key.js new` accepts
+  `--connection <id>`, `--ttl-days <n>` and `--single-browser`, and every
+  `key.js` command accepts `--json` for a single machine-readable line.
+- Sliding expiry: a key with a TTL stops verifying at `expiresAt`; each
+  successful handshake renews it (written at most once per hour). The
+  heartbeat closes connections whose key expired (close code 4004).
+- Single-browser keys: the first browser instance to complete hello is
+  recorded as `boundBrowserId`; other instances are refused with close code
+  4003. The bound instance can still reconnect. Keys without these fields
+  behave as before (up to 32 instances).
+
+### Changed
+- `keys.json` is written atomically (temp file + rename), since handshakes
+  can now update it.
+
 ## [0.10.6] - 2026-11-11
 
 ### Changed

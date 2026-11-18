@@ -24,7 +24,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "events";
 import { controlLossReceipt } from "./control-loss.js";
 import { WebSocketServer } from "ws";
-import { verifyKey, loadKeys } from "./keys.js";
+import { verifyKey, loadKeys, touchKey, isExpired } from "./keys.js";
 import { ATTACHMENT_CAPABILITY } from "../../scripts/attachments.js";
 import { INTERRUPT_CAPABILITY } from "./agent-interrupt.js";
 import {
@@ -85,10 +85,11 @@ const RECOVERY_MS = 120000;
  *   'agent-request' ({endpointId, keyId, browserId, label, text, request})
  */
 class ExtLane extends EventEmitter {
-  constructor({ log = () => {}, loadKeys: loader = loadKeys, recoveryMs = RECOVERY_MS } = {}) {
+  constructor({ log = () => {}, loadKeys: loader = loadKeys, touchKey: toucher = touchKey, recoveryMs = RECOVERY_MS } = {}) {
     super();
     this.log = log;
     this.loadKeys = loader;
+    this.touchKey = toucher;
     this.recoveryMs = Math.min(RECOVERY_MS, Math.max(1, recoveryMs));
     this.conns = new Map(); // endpointId -> registered Conn
 
@@ -225,12 +226,13 @@ class ExtLane extends EventEmitter {
     );
   }
 
-  _onConnected(ws, req, { keyId, label }) {
+  _onConnected(ws, req, { keyId, label, singleBrowser = false }) {
     // Register only after a valid hello. A bad or incomplete handshake must
     // never evict a working instance using the same credential.
     const conn = {
       keyId,
       label,
+      singleBrowser,
       ws,
       endpointId: null,
       browserId: null,
@@ -326,6 +328,30 @@ class ExtLane extends EventEmitter {
       this._send(conn, { type: "ready", endpointId, capabilities: [RESUME_CAPABILITY],
         runtimeEpoch: msg.runtimeEpoch, resume: { status: "rejected", reason: "RESUME_STATE_MISMATCH", category } });
       safeClose(conn.ws, 4005, "resume rejected");
+      return;
+    }
+    // A single-browser key is bound to the first instance that completes hello;
+    // binding and sliding-expiry renewal are persisted by touchKey, which reads
+    // the registry fresh so two racing instances cannot both win.
+    if (conn.singleBrowser && !conn.browserId) {
+      safeClose(conn.ws, 4003, "key requires a browser instance id");
+      return;
+    }
+    let touched = { ok: true };
+    try {
+      touched = this.touchKey(conn.keyId, conn.browserId);
+    } catch (err) {
+      // Same rule as the heartbeat: an unreadable registry must not lock out a
+      // key that verified a moment ago -- unless the key is single-browser,
+      // where admitting an unchecked instance would defeat the binding.
+      this.log(`ext[${endpointId}]: key registry update failed: ${err.message}`);
+      if (conn.singleBrowser) touched = { ok: false, reason: "unavailable" };
+    }
+    if (!touched.ok) {
+      this.log(`ext[${endpointId}]: refused, key ${touched.reason}`);
+      if (touched.reason === "bound") safeClose(conn.ws, 4003, "key is bound to another browser");
+      else if (touched.reason === "unavailable") safeClose(conn.ws, 1013, "key registry unavailable");
+      else safeClose(conn.ws, 4004, touched.reason === "expired" ? "key expired" : "key revoked");
       return;
     }
     if (
@@ -852,10 +878,11 @@ class ExtLane extends EventEmitter {
       this.log(`ext: keys unreadable during beat: ${err.message}`);
     }
     for (const conn of this.conns.values()) {
-      if (known && !known[conn.keyId]) {
-        this.log(`ext[${conn.endpointId || conn.keyId}]: key revoked, closing`);
-        this._terminate(conn, 4004, "key revoked");
-        safeClose(conn.ws, 4004, "key revoked");
+      if (known && (!known[conn.keyId] || isExpired(known[conn.keyId]))) {
+        const why = known[conn.keyId] ? "key expired" : "key revoked";
+        this.log(`ext[${conn.endpointId || conn.keyId}]: ${why}, closing`);
+        this._terminate(conn, 4004, why);
+        safeClose(conn.ws, 4004, why);
         continue;
       }
       if (conn.ws.readyState !== conn.ws.OPEN) continue;
