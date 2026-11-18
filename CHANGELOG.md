@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-18
+
 ### Added
 - Connection keys for Workspace-managed browser access: `key.js new` accepts
   `--connection <id>`, `--ttl-days <n>` and `--single-browser`, and every
