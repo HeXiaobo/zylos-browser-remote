@@ -360,7 +360,9 @@ completion, an explicit blocked decision, owner stop or connection interruption.
 rejects different contents for an already accepted ID. `STALE_DECISION` rejects
 ended requests. `DECISION_BUSY` rejects concurrent submissions, except a `done`/`blocked` decision for the
 executing request: that is always forwarded so the task can close, and the
-replaced waiter returns `DECISION_SUPERSEDED` (its actions may have partly run). Identical
+replaced waiter returns `DECISION_SUPERSEDED` (its actions may have partly run).
+This path sends no `agent-cancel`; the extension ends the turn from the final
+decision itself. Identical
 accepted retries can return a saved receipt marked `replayed:true`; the extension
 also checks the decision identity. Receipts are bounded to 32 on the Relay and
 are discarded when the connection ends.

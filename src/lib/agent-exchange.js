@@ -84,10 +84,9 @@ class AgentExchange {
   }
   // The caller stopped waiting (its HTTP client closed). Ask the
   // extension to cancel the in-flight execution; later results stay receiptable.
-  abandon(endpointId, id, reason = "caller-closed") {
+  abandon(endpointId, id, reason = "caller-closed", waiter = this.states.get(endpointId)?.waiter) {
     const state = this.states.get(endpointId);
-    const waiter = state?.waiter;
-    if (!waiter || waiter.id !== id) return undefined;
+    if (!waiter || state?.waiter !== waiter || waiter.id !== id) return undefined;
     this.release(state);
     state.orphan = id;
     this.ext.request(endpointId, { method: "agent-cancel", params: { id, reason }, timeoutMs: 10000 })
@@ -116,7 +115,11 @@ class AgentExchange {
         message: "Recovery judgment expired or ended; no action was sent" };
     if (state.waiter && TERMINAL_KINDS.includes(decision?.kind) && state.waiter.id === id) {
       // done/blocked must always reach the extension so the task can close.
-      this.abandon(endpointId, id, "terminal-decision")?.resolve({
+      // Release only: a cancel would make the extension move on to a new
+      // request before this final decision arrives.
+      const replaced = state.waiter;
+      this.release(state);
+      replaced.resolve({
         ok: false,
         code: "DECISION_SUPERSEDED",
         message: "A done/blocked reply replaced this decision; its actions may have partly run",
@@ -132,12 +135,13 @@ class AgentExchange {
     // Arm before forwarding: a very fast client may return its next request
     // before acknowledging receipt of this response.
     state.mode = true;
+    let mine;
     const next = new Promise((resolve) => {
       // One waiter per endpoint, released by the next request, task end,
       // replacement, disconnect or the caller leaving. Execution itself has
       // no wall-clock deadline here.
       state.orphan = undefined;
-      state.waiter = { id, resolve };
+      state.waiter = mine = { id, resolve };
     });
     const previous = state.receipts.get(id);
     try {
@@ -148,17 +152,16 @@ class AgentExchange {
         params: { id, decision, ...(inputId ? { inputId } : {}) },
         timeoutMs: 10000,
       });
-      if (previous && (!state.terminal || previous.finished) && state.waiter?.id === id) {
-        const waiter = state.waiter;
+      if (previous && (!state.terminal || previous.finished) && state.waiter === mine) {
         this.release(state);
-        waiter.resolve({ ...previous, replayed: true });
+        mine.resolve({ ...previous, replayed: true });
       } else if (state.waiter && (state.terminal || state.next?.id !== id))
         this.deliver(state);
     } catch (error) {
-      const waiter = state.waiter;
-      if (waiter?.id === id) {
+      // Compare the object: a later retry of the same ID owns its own waiter.
+      if (state.waiter === mine) {
         this.release(state);
-        waiter.resolve({
+        mine.resolve({
           ok: false,
           code: error.code || "EXT_ERROR",
           message: error.message,

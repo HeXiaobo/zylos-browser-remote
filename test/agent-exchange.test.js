@@ -359,3 +359,56 @@ test("done/blocked on a still-executing request is forwarded instead of DECISION
   assert.equal((await stuck).code, "DECISION_SUPERSEDED");
   assert.equal((await blocked).finished, true);
 });
+
+test("done/blocked sends no agent-cancel, so an extension that moves on after cancel still receives the final decision", async (t) => {
+  const { ext, exchange } = setup(t);
+  const sent = [];
+  ext.request = async (_endpoint, request) => {
+    sent.push(request.method);
+    // Like extension #25: a cancel abandons the step and issues a new request.
+    if (request.method === "agent-cancel") exchange.ingest(message("r2", 2));
+    if (request.params.decision?.kind === "done") ext.emit("agent-turn-end", { endpointId: "aaaaaaaaaaaa", taskId: "task", status: "done" });
+    return { accepted: true };
+  };
+  const stuck = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const done = await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "ok" });
+  assert.equal(done.finished, true);
+  assert.equal((await stuck).code, "DECISION_SUPERSEDED");
+  assert.deepEqual(sent, ["agent-decision", "agent-decision"]);
+});
+
+test("done/blocked for another request never supersedes the executing one", async (t) => {
+  const { ext, exchange } = setup(t);
+  let calls = 0;
+  ext.request = async () => { if (++calls === 1) exchange.ingest(message("r2", 2)); return { accepted: true }; };
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" })).next.id, "r2");
+  const executing = exchange.respond("aaaaaaaaaaaa", "r2", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "old" })).code, "DECISION_BUSY");
+  exchange.ingest(message("r3", 3));
+  assert.equal((await executing).next.id, "r3");
+});
+
+test("a late acknowledgement failure of an abandoned call never resolves a retry's waiter", { timeout: 5000 }, async (t) => {
+  const { ext, exchange } = setup(t);
+  let failFirst;
+  let calls = 0;
+  ext.request = (_endpoint, request) => {
+    if (request.method === "agent-cancel") return Promise.resolve({});
+    if (++calls === 1) return new Promise((_, reject) => { failFirst = reject; });
+    return Promise.resolve({ accepted: true, replayed: true });
+  };
+  const first = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  exchange.abandon("aaaaaaaaaaaa", "r1");
+  let retrySettled = false;
+  const retry = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" }).then((value) => { retrySettled = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  failFirst(Object.assign(new Error("ack lost"), { code: "EXT_TIMEOUT" }));
+  void first; // its caller already left
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(retrySettled, false);
+  exchange.ingest(message("r2", 2));
+  assert.equal((await retry).next.id, "r2");
+});
