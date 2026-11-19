@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A decision no longer stays busy forever when its caller gives up (#29): when the
+  `/decision` HTTP client exits, the relay releases the waiter, sends
+  `agent-cancel` to the extension, and keeps the request answerable so a retry
+  of the same ID gets a late result.
+- `done`/`blocked` for a request that is still executing are forwarded instead
+  of returning `DECISION_BUSY`, so the agent can always close the task; the
+  replaced waiter returns `DECISION_SUPERSEDED`.
+
 ## [0.11.1] - 2026-11-19
 
 ### Fixed
