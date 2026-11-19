@@ -9,6 +9,8 @@ const TERMINAL_KINDS = ["done", "blocked"];
 class AgentExchange {
   constructor(ext) {
     this.ext = ext;
+    // Which decision produced each receipt: only an identical retry replays it.
+    this.signatures = new WeakMap();
     this.states = new Map();
     ext.on("disconnected", (key) => this.disconnected(key));
     ext.on("agent-turn-end", (event) => this.ended(event));
@@ -41,7 +43,7 @@ class AgentExchange {
     if (!state.mode) return false; // First delivery uses the existing C4 adapter.
     if (!state.waiter && state.orphan) {
       // The caller gave up; keep the result so a retry of that request gets it.
-      state.waiter = { id: state.orphan, resolve: () => {} };
+      state.waiter = { ...state.orphan, resolve: () => {} };
       state.orphan = undefined;
     }
     if (state.waiter) this.deliver(state);
@@ -74,6 +76,7 @@ class AgentExchange {
       };
     }
     state.receipts.set(waiter.id, response);
+    if (waiter.signature) this.signatures.set(response, waiter.signature);
     while (state.receipts.size > 32)
       state.receipts.delete(state.receipts.keys().next().value);
     this.release(state);
@@ -88,7 +91,7 @@ class AgentExchange {
     const state = this.states.get(endpointId);
     if (!waiter || state?.waiter !== waiter || waiter.id !== id) return undefined;
     this.release(state);
-    state.orphan = id;
+    state.orphan = { id, signature: waiter.signature };
     this.ext.request(endpointId, { method: "agent-cancel", params: { id, reason }, timeoutMs: 10000 })
       .catch(() => {}); // Older extensions reject it; the release above still holds.
     return waiter;
@@ -135,13 +138,14 @@ class AgentExchange {
     // Arm before forwarding: a very fast client may return its next request
     // before acknowledging receipt of this response.
     state.mode = true;
+    const signature = JSON.stringify([decision, inputId ?? null]);
     let mine;
     const next = new Promise((resolve) => {
       // One waiter per endpoint, released by the next request, task end,
       // replacement, disconnect or the caller leaving. Execution itself has
       // no wall-clock deadline here.
       state.orphan = undefined;
-      state.waiter = mine = { id, resolve };
+      state.waiter = mine = { id, resolve, signature };
     });
     const previous = state.receipts.get(id);
     try {
@@ -152,10 +156,14 @@ class AgentExchange {
         params: { id, decision, ...(inputId ? { inputId } : {}) },
         timeoutMs: 10000,
       });
-      if (previous && (!state.terminal || previous.finished) && state.waiter === mine) {
+      const identical = previous && this.signatures.get(previous) === signature;
+      // A different done/blocked for an answered ID (e.g. after the caller was
+      // killed) is a new final decision: wait for its end, never replay.
+      const newFinal = previous && !identical && TERMINAL_KINDS.includes(decision?.kind);
+      if (identical && (!state.terminal || previous.finished) && state.waiter === mine) {
         this.release(state);
         mine.resolve({ ...previous, replayed: true });
-      } else if (state.waiter && (state.terminal || state.next?.id !== id))
+      } else if (state.waiter && (state.terminal || (state.next?.id !== id && !newFinal)))
         this.deliver(state);
     } catch (error) {
       // Compare the object: a later retry of the same ID owns its own waiter.

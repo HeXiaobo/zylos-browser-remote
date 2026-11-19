@@ -412,3 +412,22 @@ test("a late acknowledgement failure of an abandoned call never resolves a retry
   exchange.ingest(message("r2", 2));
   assert.equal((await retry).next.id, "r2");
 });
+
+test("done for an ID whose caller was killed waits for the end instead of replaying the old receipt", { timeout: 5000 }, async (t) => {
+  const { ext, exchange } = setup(t);
+  ext.request = async (_endpoint, request) => {
+    // Like extension #25: cancel issues a new request; a done for the
+    // cancelled ID is accepted and the turn ends after the acknowledgement.
+    if (request.method === "agent-cancel") exchange.ingest(message("r2", 2));
+    if (request.params.decision?.kind === "done")
+      setImmediate(() => ext.emit("agent-turn-end", { endpointId: "aaaaaaaaaaaa", taskId: "task", status: "done" }));
+    return { accepted: true };
+  };
+  void exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  exchange.abandon("aaaaaaaaaaaa", "r1"); // decision.js killed
+  await new Promise((resolve) => setImmediate(resolve));
+  const done = await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "final" });
+  assert.equal(done.finished, true);
+  assert.equal(done.replayed, undefined);
+});
