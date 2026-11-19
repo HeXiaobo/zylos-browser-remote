@@ -41,7 +41,9 @@ function createClient(deps = {}) {
       const data = body === undefined ? null : JSON.stringify(body);
       const waitingForExecution = pathname === "/decision";
       const detailed = pathname === "/diagnostics/detail";
-      const timeoutMs = 10000;
+      // /task/start waits on the relay's own 20s task-start timeout, so it must
+      // not give up first.
+      const timeoutMs = pathname === "/task/start" ? 30000 : 10000;
       let timer;
       const req = httpImpl.request(
         {

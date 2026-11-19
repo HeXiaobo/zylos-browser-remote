@@ -117,3 +117,14 @@ test("a disconnected decision response rejects without submitting the decision a
   assert.equal(s.requests.length, 1);
   assert.equal(s.timers.size, 0);
 });
+
+test("task start waits past the relay's own task-start timeout before giving up", async () => {
+  const s = clientFixture();
+  const pending = s.client.taskStart({ endpoint: "a".repeat(12) });
+  const rejected = assert.rejects(pending, (e) => e.code === "RELAY_RESPONSE_TIMEOUT");
+  s.requests[0].emit("finish");
+  const timer = [...s.timers.values()][0];
+  assert.equal(timer.ms, 30000);
+  timer.callback();
+  await rejected;
+});
