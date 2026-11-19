@@ -190,15 +190,19 @@ class AgentLane {
             "BAD_REQUEST",
             "id and a structured decision are required",
           );
-        return reply(
-          200,
-          await this.exchange.respond(
-            target.endpointId,
-            body.id,
-            body.decision,
-            body.inputId,
-          ),
+        // A client that exits (timeout, kill) must not leave the decision busy.
+        let answered = false;
+        res.on("close", () => {
+          if (!answered) this.exchange.abandon(target.endpointId, body.id);
+        });
+        const result = await this.exchange.respond(
+          target.endpointId,
+          body.id,
+          body.decision,
+          body.inputId,
         );
+        answered = true;
+        return reply(200, result);
       }
 
       return fail(404, "NOT_FOUND", "not found");

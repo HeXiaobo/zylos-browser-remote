@@ -4,6 +4,8 @@ import { controlLossReceipt } from "./control-loss.js";
 
 // Generic request/response exchange. No action names, page rules or decisions
 // are interpreted here. One response can carry the client's next request.
+const TERMINAL_KINDS = ["done", "blocked"];
+
 class AgentExchange {
   constructor(ext) {
     this.ext = ext;
@@ -37,6 +39,11 @@ class AgentExchange {
       replyCommands: replyCommands(endpointId, request.id),
     };
     if (!state.mode) return false; // First delivery uses the existing C4 adapter.
+    if (!state.waiter && state.orphan) {
+      // The caller gave up; keep the result so a retry of that request gets it.
+      state.waiter = { id: state.orphan, resolve: () => {} };
+      state.orphan = undefined;
+    }
     if (state.waiter) this.deliver(state);
     return true;
   }
@@ -69,8 +76,23 @@ class AgentExchange {
     state.receipts.set(waiter.id, response);
     while (state.receipts.size > 32)
       state.receipts.delete(state.receipts.keys().next().value);
-    state.waiter = null;
+    this.release(state);
     waiter.resolve(response);
+  }
+  release(state) {
+    state.waiter = null;
+  }
+  // The caller stopped waiting (its HTTP client closed). Ask the
+  // extension to cancel the in-flight execution; later results stay receiptable.
+  abandon(endpointId, id, reason = "caller-closed") {
+    const state = this.states.get(endpointId);
+    const waiter = state?.waiter;
+    if (!waiter || waiter.id !== id) return undefined;
+    this.release(state);
+    state.orphan = id;
+    this.ext.request(endpointId, { method: "agent-cancel", params: { id, reason }, timeoutMs: 10000 })
+      .catch(() => {}); // Older extensions reject it; the release above still holds.
+    return waiter;
   }
   async respond(endpointId, id, decision, inputId) {
     const state = this.states.get(endpointId);
@@ -92,6 +114,14 @@ class AgentExchange {
       return { ok: false, code: "RECOVERY_CLOSED", finished: true, status: state.terminal,
         ...(state.interruption ? { interruption: state.interruption } : {}),
         message: "Recovery judgment expired or ended; no action was sent" };
+    if (state.waiter && TERMINAL_KINDS.includes(decision?.kind) && state.waiter.id === id) {
+      // done/blocked must always reach the extension so the task can close.
+      this.abandon(endpointId, id, "terminal-decision")?.resolve({
+        ok: false,
+        code: "DECISION_SUPERSEDED",
+        message: "A done/blocked reply replaced this decision; its actions may have partly run",
+      });
+    }
     if (state.waiter)
       return {
         ok: false,
@@ -104,7 +134,9 @@ class AgentExchange {
     state.mode = true;
     const next = new Promise((resolve) => {
       // One waiter per endpoint, released by the next request, task end,
-      // replacement or disconnect. Execution has no wall-clock deadline.
+      // replacement, disconnect or the caller leaving. Execution itself has
+      // no wall-clock deadline here.
+      state.orphan = undefined;
       state.waiter = { id, resolve };
     });
     const previous = state.receipts.get(id);
@@ -118,14 +150,14 @@ class AgentExchange {
       });
       if (previous && (!state.terminal || previous.finished) && state.waiter?.id === id) {
         const waiter = state.waiter;
-        state.waiter = null;
+        this.release(state);
         waiter.resolve({ ...previous, replayed: true });
       } else if (state.waiter && (state.terminal || state.next?.id !== id))
         this.deliver(state);
     } catch (error) {
       const waiter = state.waiter;
       if (waiter?.id === id) {
-        state.waiter = null;
+        this.release(state);
         waiter.resolve({
           ok: false,
           code: error.code || "EXT_ERROR",

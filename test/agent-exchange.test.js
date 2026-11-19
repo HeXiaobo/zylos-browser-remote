@@ -331,3 +331,31 @@ for (const action of ["disconnect", "replace", "shutdown"])
     assert.equal(fs.existsSync(saved.path), false);
     assert.throws(() => scope.materialize(file), /task has ended/);
   });
+
+test("a caller that leaves releases the decision, cancels it, and a retry gets the late result", async (t) => {
+  const { ext, exchange } = setup(t);
+  const sent = [];
+  ext.request = async (_endpoint, request) => { sent.push(request.method); return { accepted: true }; };
+  const first = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(exchange.abandon("aaaaaaaaaaaa", "r1"));
+  assert.deepEqual(sent, ["agent-decision", "agent-cancel"]);
+  exchange.ingest(message("r2", 2)); // late result after the caller left
+  const retry = await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  assert.equal(retry.replayed, true);
+  assert.equal(retry.next.id, "r2");
+  void first;
+});
+
+test("done/blocked on a still-executing request is forwarded instead of DECISION_BUSY", async (t) => {
+  const { ext, exchange } = setup(t);
+  ext.request = async () => ({ accepted: true });
+  const stuck = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" })).code, "DECISION_BUSY");
+  const blocked = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "blocked", text: "stuck" });
+  await new Promise((resolve) => setImmediate(resolve));
+  ext.emit("agent-turn-end", { endpointId: "aaaaaaaaaaaa", taskId: "task", status: "blocked" });
+  assert.equal((await stuck).code, "DECISION_SUPERSEDED");
+  assert.equal((await blocked).finished, true);
+});

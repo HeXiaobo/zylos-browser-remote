@@ -343,6 +343,10 @@ by this final-answer endpoint.
 Every decision requires its explicit endpoint and request ID; omitted or offline targets never fall back to another browser. The exchange permits one waiting decision per endpoint. Decision acceptance has
 a 10-second transport budget. Execution/continuation waits have no deadline;
 the next client request, task end, replacement or disconnect releases the waiter.
+So does the decision HTTP client going away (for example a caller-side `timeout`
+killing `decision.js`): the relay then sends `{method:"agent-cancel",params:{id,reason}}`
+to the extension (older extensions reject it harmlessly) and keeps the request
+answerable, so a retry of the same ID receives a result that arrives later.
 The CLI bounds connection/request delivery to 10 seconds, then waits on the same
 HTTP request without an execution timeout. Status requests retain a 10-second
 response deadline. A transport timeout does not prove an action failed.
@@ -354,7 +358,9 @@ completion, an explicit blocked decision, owner stop or connection interruption.
 
 `BAD_DECISION` permits correction of the pending request. `DECISION_CONFLICT`
 rejects different contents for an already accepted ID. `STALE_DECISION` rejects
-ended requests. `DECISION_BUSY` rejects concurrent submissions. Identical
+ended requests. `DECISION_BUSY` rejects concurrent submissions, except a `done`/`blocked` decision for the
+executing request: that is always forwarded so the task can close, and the
+replaced waiter returns `DECISION_SUPERSEDED` (its actions may have partly run). Identical
 accepted retries can return a saved receipt marked `replayed:true`; the extension
 also checks the decision identity. Receipts are bounded to 32 on the Relay and
 are discarded when the connection ends.
