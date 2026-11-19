@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-19
+
 ### Fixed
 - `task.start` waits 20 seconds for the extension instead of 5, so a page that
   loads in 5–10 seconds no longer returns a false `EXT_TIMEOUT`; the
