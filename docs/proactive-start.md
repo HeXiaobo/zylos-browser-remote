@@ -102,6 +102,12 @@ pages. Use a URL supplied by the user or already established in this task's
 authorized context. Do not invent a URL or assume that a new tab preserves an
 unsaved form or the state of an existing tab.
 
+The one allowed substitution is for slow pages: when the authorized URL is a heavy
+page that may not load within the extension's start limit (about 10 seconds,
+`TASK_START_PAGE_TIMEOUT`), start on a light page of the same origin, such as its
+home page, and put the authorized URL in `prompt` for the task to open. The
+origin must not change.
+
 If the user means "this page" and no URL/page context is available, ask them to
 send the request from the extension on that page, or provide its URL if a new
 task tab is acceptable. Incoming extension requests can use use-current-tab

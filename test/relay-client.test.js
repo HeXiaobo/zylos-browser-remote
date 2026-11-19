@@ -124,7 +124,7 @@ test("task start waits past the relay's own task-start timeout before giving up"
   const rejected = assert.rejects(pending, (e) => e.code === "RELAY_RESPONSE_TIMEOUT");
   s.requests[0].emit("finish");
   const timer = [...s.timers.values()][0];
-  assert.equal(timer.ms, 125000);
+  assert.equal(timer.ms, 30000);
   timer.callback();
   await rejected;
 });

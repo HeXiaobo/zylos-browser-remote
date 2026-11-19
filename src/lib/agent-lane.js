@@ -1,6 +1,6 @@
 // Agent-host HTTP entry: decisions and read-only diagnostics.
 import http from "http";
-import { taskStartParams, taskStartResult, TASK_START_CAPABILITY, taskStartTimeoutMs } from "./task-start.js";
+import { taskStartParams, taskStartResult, TASK_START_CAPABILITY, TASK_START_TIMEOUT_MS } from "./task-start.js";
 import { detailParams, detailResult, DETAIL_CAPABILITY } from "./detail-diagnostics.js";
 import { diagnosticParams, diagnosticResult, DIAGNOSTICS_CAPABILITY, DIAGNOSTICS_TIMEOUT_MS } from "./diagnostics.js";
 
@@ -24,6 +24,7 @@ class AgentLane {
     monitor = null,
     exchange = null,
     incidentEvidence = null,
+    taskStartTimeoutMs = TASK_START_TIMEOUT_MS,
   }) {
     this.ext = extLane;
     this.port = port;
@@ -31,6 +32,7 @@ class AgentLane {
     this.monitor = monitor;
     this.exchange = exchange;
     this.incidentEvidence = incidentEvidence;
+    this.taskStartTimeoutMs = taskStartTimeoutMs;
     this.server = http.createServer((req, res) => this._onHttp(req, res));
   }
 
@@ -69,9 +71,9 @@ class AgentLane {
         }
         let raw;
         try {
-          raw = await this.ext.request(target.endpointId, { method: "task.start", params, timeoutMs: taskStartTimeoutMs() });
+          raw = await this.ext.request(target.endpointId, { method: "task.start", params, timeoutMs: this.taskStartTimeoutMs });
         } catch (err) {
-          const code = ["EXT_OFFLINE", "EXT_TIMEOUT", "TASK_START_DISABLED", "TASK_START_CONFLICT", "TASK_START_REVOKED", "TASK_START_UNSUPPORTED", "BAD_PARAMS"].includes(err.code) ? err.code : "TASK_START_ERROR";
+          const code = ["EXT_OFFLINE", "EXT_TIMEOUT", "TASK_START_DISABLED", "TASK_START_CONFLICT", "TASK_START_REVOKED", "TASK_START_UNSUPPORTED", "TASK_START_PAGE_TIMEOUT", "PAGE_UNAVAILABLE", "BAD_PARAMS"].includes(err.code) ? err.code : "TASK_START_ERROR";
           return fail(RELAY_ERROR_STATUS[code] || (code === "BAD_PARAMS" ? 400 : code === "TASK_START_ERROR" ? 502 : 409), code,
             "Task start failed or outcome is unknown; do not retry automatically");
         }

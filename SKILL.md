@@ -111,12 +111,13 @@ The extension checks permission and opens its own task tab, then follows the
 ordinary C4 decision flow. Acceptance (`started` or `existing`) is not completion.
 
 Start pages must load quickly: the extension abandons a start whose page has not
-loaded within its own limit (about 10 seconds in current releases), which
-surfaces as a page timeout or `EXT_TIMEOUT`. For heavy or slow sites (for example
-social-media profiles, dashboards, search results), set `url` to a light page on
-the same site, such as its home page, and name the real target URL in `prompt`
-so the task navigates there after it has started. Navigation inside a running
-task is not bound by the start limit.
+loaded within its own limit (about 10 seconds in current releases) and closes
+the tab, returning `TASK_START_PAGE_TIMEOUT` (or `PAGE_UNAVAILABLE` when the page
+cannot open). Both mean the task did not start. For heavy or slow sites (for
+example social-media profiles, dashboards, search results), set `url` to a light
+page on the same origin as the authorized URL, such as that origin's home page,
+and name the authorized target URL in `prompt` so the task navigates there after
+it has started. Never pick a start page on another origin.
 
 Never automatically retry a failed or timed-out start. For an explicit retry of
 the same logical start, reuse the identical request ID and payload, including

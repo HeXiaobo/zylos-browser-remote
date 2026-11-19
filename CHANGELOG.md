@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `task.start` waits 20 seconds for the extension instead of 5, so a page that
+  loads in 5–10 seconds no longer returns a false `EXT_TIMEOUT`; the
+  `/task/start` client waits 30 seconds.
+- `TASK_START_PAGE_TIMEOUT` and `PAGE_UNAVAILABLE` from the extension are passed
+  through instead of the generic `TASK_START_ERROR`; both mean the task did not
+  start.
+
+### Docs
+- SKILL and proactive-start: for slow pages, start on a light page of the same
+  origin and name the authorized target URL in the prompt.
+
 ## [0.11.0] - 2026-11-18
 
 ### Added
