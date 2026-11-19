@@ -151,12 +151,14 @@ class AgentExchange {
     try {
       // Client validates both the schema and idempotent contents, including
       // retries whose earlier browser actions have already happened.
-      await this.ext.request(endpointId, {
+      const ack = await this.ext.request(endpointId, {
         method: "agent-decision",
         params: { id, decision, ...(inputId ? { inputId } : {}) },
         timeoutMs: 10000,
       });
-      const identical = previous && this.signatures.get(previous) === signature;
+      // The extension's normalized comparison wins: replayed:true means it saw
+      // the same decision, whatever the key order here.
+      const identical = previous && (ack?.replayed === true || this.signatures.get(previous) === signature);
       // A different done/blocked for an answered ID (e.g. after the caller was
       // killed) is a new final decision: wait for its end, never replay.
       const newFinal = previous && !identical && TERMINAL_KINDS.includes(decision?.kind);

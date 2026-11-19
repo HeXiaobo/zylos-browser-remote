@@ -431,3 +431,16 @@ test("done for an ID whose caller was killed waits for the end instead of replay
   assert.equal(done.finished, true);
   assert.equal(done.replayed, undefined);
 });
+
+test("a retry the extension calls identical replays even when its key order differs", { timeout: 5000 }, async (t) => {
+  const { ext, exchange } = setup(t);
+  let calls = 0;
+  ext.request = async () => {
+    if (++calls === 1) { exchange.ingest(message("r2", 2)); return { accepted: true }; }
+    return { accepted: true, replayed: true };
+  };
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "x" })).next.id, "r2");
+  const retry = await exchange.respond("aaaaaaaaaaaa", "r1", { text: "x", kind: "done" });
+  assert.equal(retry.replayed, true);
+  assert.equal(retry.next.id, "r2");
+});
