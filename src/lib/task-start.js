@@ -1,7 +1,21 @@
 import { ENDPOINT_RE, BROWSER_ID_RE } from "./endpoint.js";
 
 export const TASK_START_CAPABILITY = "agent-task-start-v1";
-export const TASK_START_TIMEOUT_MS = 5000;
+// The extension opens the task tab and waits up to 10s for the page before it
+// answers, so the default leaves room for a slow page on top of that.
+export const TASK_START_TIMEOUT_MS = 20000;
+export const TASK_START_TIMEOUT_MIN_MS = 5000;
+export const TASK_START_TIMEOUT_MAX_MS = 120000;
+
+/** BROWSER_REMOTE_TASK_START_TIMEOUT_MS when it is an integer in range, else the default. */
+export function taskStartTimeoutMs(env = process.env) {
+  const raw = env.BROWSER_REMOTE_TASK_START_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return TASK_START_TIMEOUT_MS;
+  if (!/^\d+$/.test(raw)) return TASK_START_TIMEOUT_MS;
+  const ms = Number(raw);
+  if ( ms < TASK_START_TIMEOUT_MIN_MS || ms > TASK_START_TIMEOUT_MAX_MS) return TASK_START_TIMEOUT_MS;
+  return ms;
+}
 
 export function taskStartParams(body) {
   if (!body || typeof body !== "object" || Array.isArray(body) ||

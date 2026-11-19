@@ -1,6 +1,6 @@
 // Agent-host HTTP entry: decisions and read-only diagnostics.
 import http from "http";
-import { taskStartParams, taskStartResult, TASK_START_CAPABILITY, TASK_START_TIMEOUT_MS } from "./task-start.js";
+import { taskStartParams, taskStartResult, TASK_START_CAPABILITY, taskStartTimeoutMs } from "./task-start.js";
 import { detailParams, detailResult, DETAIL_CAPABILITY } from "./detail-diagnostics.js";
 import { diagnosticParams, diagnosticResult, DIAGNOSTICS_CAPABILITY, DIAGNOSTICS_TIMEOUT_MS } from "./diagnostics.js";
 
@@ -69,7 +69,7 @@ class AgentLane {
         }
         let raw;
         try {
-          raw = await this.ext.request(target.endpointId, { method: "task.start", params, timeoutMs: TASK_START_TIMEOUT_MS });
+          raw = await this.ext.request(target.endpointId, { method: "task.start", params, timeoutMs: taskStartTimeoutMs() });
         } catch (err) {
           const code = ["EXT_OFFLINE", "EXT_TIMEOUT", "TASK_START_DISABLED", "TASK_START_CONFLICT", "TASK_START_REVOKED", "TASK_START_UNSUPPORTED", "BAD_PARAMS"].includes(err.code) ? err.code : "TASK_START_ERROR";
           return fail(RELAY_ERROR_STATUS[code] || (code === "BAD_PARAMS" ? 400 : code === "TASK_START_ERROR" ? 502 : 409), code,
