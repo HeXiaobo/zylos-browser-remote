@@ -82,6 +82,8 @@ test("extension refusal is bounded and arbitrary errors stay private", async t =
     const response = await client.taskStart(body);
     assert.equal(response.body.code, expected);
     assert.doesNotMatch(JSON.stringify(response), /private sentinel/);
+    if (["TASK_START_PAGE_TIMEOUT", "PAGE_UNAVAILABLE"].includes(expected)) assert.match(response.body.message, /did not start/);
+    else assert.doesNotMatch(JSON.stringify(response.body), /did not start/);
   }
   assert.equal(frames.length, 7);
 });

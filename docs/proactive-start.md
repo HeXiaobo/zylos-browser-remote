@@ -146,6 +146,10 @@ Handle outcomes without guessing whether work ran:
   Check known outcomes and partial effects. A new start requires that browser
   owner's renewed explicit request or consent; the original requester's request
   alone is insufficient, even when an earlier mapping remains recorded.
+- TASK_START_PAGE_TIMEOUT or PAGE_UNAVAILABLE: the task did not start; the start
+  page did not load in time (or could not open) and its tab was closed. Do not
+  retry automatically. With the user's go-ahead, a new start may use a light page
+  of the same origin as `url` and name the authorized target in `prompt`.
 - RELAY_DOWN (connection refused): the start was not delivered to the relay;
   report service unavailability, not an unknown browser execution result.
 - A timeout, transport error or invalid response can have an unknown outcome.
