@@ -102,6 +102,12 @@ pages. Use a URL supplied by the user or already established in this task's
 authorized context. Do not invent a URL or assume that a new tab preserves an
 unsaved form or the state of an existing tab.
 
+The one allowed substitution is for slow pages: when the authorized URL is a heavy
+page that may not load within the extension's start limit (about 10 seconds,
+`TASK_START_PAGE_TIMEOUT`), start on a light page of the same origin, such as its
+home page, and put the authorized URL in `prompt` for the task to open. The
+origin must not change.
+
 If the user means "this page" and no URL/page context is available, ask them to
 send the request from the extension on that page, or provide its URL if a new
 task tab is acceptable. Incoming extension requests can use use-current-tab
@@ -140,6 +146,10 @@ Handle outcomes without guessing whether work ran:
   Check known outcomes and partial effects. A new start requires that browser
   owner's renewed explicit request or consent; the original requester's request
   alone is insufficient, even when an earlier mapping remains recorded.
+- TASK_START_PAGE_TIMEOUT or PAGE_UNAVAILABLE: the task did not start; the start
+  page did not load in time (or could not open) and its tab was closed. Do not
+  retry automatically. With the user's go-ahead, a new start may use a light page
+  of the same origin as `url` and name the authorized target in `prompt`.
 - RELAY_DOWN (connection refused): the start was not delivered to the relay;
   report service unavailability, not an unknown browser execution result.
 - A timeout, transport error or invalid response can have an unknown outcome.

@@ -7,7 +7,7 @@ import { AgentLane } from "../src/lib/agent-lane.js";
 import { digest, keyIdOf } from "../src/lib/keys.js";
 import { createClient } from "../scripts/relay-client.js";
 import { parseTaskStart, startTask } from "../scripts/task-start.js";
-import { taskStartParams, taskStartResult, TASK_START_CAPABILITY } from "../src/lib/task-start.js";
+import { taskStartParams, taskStartResult, TASK_START_CAPABILITY, TASK_START_TIMEOUT_MS } from "../src/lib/task-start.js";
 
 const key = "ab".repeat(32);
 const requestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -16,10 +16,10 @@ const endpoint = `${keyIdOf(key)}.${requestId}`;
 const body = { endpoint, requestId, prompt: "Inspect this page", url: "https://example.com/path" };
 const result = { requestId, taskId, status: "started" };
 
-async function setup(t, handler, caps = [TASK_START_CAPABILITY]) {
+async function setup(t, handler, caps = [TASK_START_CAPABILITY], laneOptions = {}) {
   const ext = new ExtLane({ loadKeys: () => ({ [keyIdOf(key)]: { sha256: digest(key) } }) });
   await ext.listen(0, "127.0.0.1");
-  const agent = new AgentLane({ extLane: ext, port: 0 });
+  const agent = new AgentLane({ extLane: ext, port: 0, ...laneOptions });
   await agent.listen();
   t.after(() => { agent.close(); ext.close(); });
   const client = createClient({ base: `http://127.0.0.1:${agent.server.address().port}` });
@@ -77,13 +77,15 @@ test("extension refusal is bounded and arbitrary errors stay private", async t =
   const { client, frames } = await setup(t, (frame, ws) => {
     ws.send(JSON.stringify({ type: "error", id: frame.id, code, message: "private sentinel" }));
   });
-  for (const expected of ["TASK_START_DISABLED", "TASK_START_CONFLICT", "TASK_START_REVOKED", "BAD_PARAMS", "TASK_START_ERROR"]) {
+  for (const expected of ["TASK_START_DISABLED", "TASK_START_CONFLICT", "TASK_START_REVOKED", "TASK_START_PAGE_TIMEOUT", "PAGE_UNAVAILABLE", "BAD_PARAMS", "TASK_START_ERROR"]) {
     code = expected === "TASK_START_ERROR" ? "private sentinel" : expected;
     const response = await client.taskStart(body);
     assert.equal(response.body.code, expected);
     assert.doesNotMatch(JSON.stringify(response), /private sentinel/);
+    if (["TASK_START_PAGE_TIMEOUT", "PAGE_UNAVAILABLE"].includes(expected)) assert.match(response.body.message, /did not start/);
+    else assert.doesNotMatch(JSON.stringify(response.body), /did not start/);
   }
-  assert.equal(frames.length, 5);
+  assert.equal(frames.length, 7);
 });
 
 test("mismatched response and disconnected extension do not replay", async t => {
@@ -98,8 +100,23 @@ test("mismatched response and disconnected extension do not replay", async t => 
   assert.equal(frames.length, 2);
 });
 
+test("task start timeout defaults to 20s", () => {
+  assert.equal(TASK_START_TIMEOUT_MS, 20000);
+  assert.equal(new AgentLane({ extLane: null, port: 0 }).taskStartTimeoutMs, 20000);
+});
+
+test("a slow page (extension answers after 5s) still starts under the default timeout", async t => {
+  const { client } = await setup(t, (frame, ws) => {
+    setTimeout(() => ws.send(JSON.stringify({ type: "resp", id: frame.id, result })), 6000);
+  });
+  assert.deepEqual(await startTask(body, client), { ok: true, endpointId: endpoint, ...result });
+});
+
 test("timeout has unknown outcome and never retries", async t => {
-  const { client, frames } = await setup(t, () => undefined);
+  const { client, frames } = await setup(t, () => undefined, undefined, { taskStartTimeoutMs: 1000 });
+  const sentAt = Date.now();
   assert.equal((await client.taskStart(body)).body.code, "EXT_TIMEOUT");
+  const waited = Date.now() - sentAt;
+  assert.ok(waited >= 900 && waited < 3000, `relay must use the configured timeout, waited ${waited}ms`);
   assert.equal(frames.length, 1);
 });

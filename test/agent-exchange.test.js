@@ -331,3 +331,116 @@ for (const action of ["disconnect", "replace", "shutdown"])
     assert.equal(fs.existsSync(saved.path), false);
     assert.throws(() => scope.materialize(file), /task has ended/);
   });
+
+test("a caller that leaves releases the decision, cancels it, and a retry gets the late result", async (t) => {
+  const { ext, exchange } = setup(t);
+  const sent = [];
+  ext.request = async (_endpoint, request) => { sent.push(request.method); return { accepted: true }; };
+  const first = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(exchange.abandon("aaaaaaaaaaaa", "r1"));
+  assert.deepEqual(sent, ["agent-decision", "agent-cancel"]);
+  exchange.ingest(message("r2", 2)); // late result after the caller left
+  const retry = await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  assert.equal(retry.replayed, true);
+  assert.equal(retry.next.id, "r2");
+  void first;
+});
+
+test("done/blocked on a still-executing request is forwarded instead of DECISION_BUSY", async (t) => {
+  const { ext, exchange } = setup(t);
+  ext.request = async () => ({ accepted: true });
+  const stuck = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" })).code, "DECISION_BUSY");
+  const blocked = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "blocked", text: "stuck" });
+  await new Promise((resolve) => setImmediate(resolve));
+  ext.emit("agent-turn-end", { endpointId: "aaaaaaaaaaaa", taskId: "task", status: "blocked" });
+  assert.equal((await stuck).code, "DECISION_SUPERSEDED");
+  assert.equal((await blocked).finished, true);
+});
+
+test("done/blocked sends no agent-cancel, so an extension that moves on after cancel still receives the final decision", async (t) => {
+  const { ext, exchange } = setup(t);
+  const sent = [];
+  ext.request = async (_endpoint, request) => {
+    sent.push(request.method);
+    // Like extension #25: a cancel abandons the step and issues a new request.
+    if (request.method === "agent-cancel") exchange.ingest(message("r2", 2));
+    if (request.params.decision?.kind === "done") ext.emit("agent-turn-end", { endpointId: "aaaaaaaaaaaa", taskId: "task", status: "done" });
+    return { accepted: true };
+  };
+  const stuck = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const done = await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "ok" });
+  assert.equal(done.finished, true);
+  assert.equal((await stuck).code, "DECISION_SUPERSEDED");
+  assert.deepEqual(sent, ["agent-decision", "agent-decision"]);
+});
+
+test("done/blocked for another request never supersedes the executing one", async (t) => {
+  const { ext, exchange } = setup(t);
+  let calls = 0;
+  ext.request = async () => { if (++calls === 1) exchange.ingest(message("r2", 2)); return { accepted: true }; };
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" })).next.id, "r2");
+  const executing = exchange.respond("aaaaaaaaaaaa", "r2", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "old" })).code, "DECISION_BUSY");
+  exchange.ingest(message("r3", 3));
+  assert.equal((await executing).next.id, "r3");
+});
+
+test("a late acknowledgement failure of an abandoned call never resolves a retry's waiter", { timeout: 5000 }, async (t) => {
+  const { ext, exchange } = setup(t);
+  let failFirst;
+  let calls = 0;
+  ext.request = (_endpoint, request) => {
+    if (request.method === "agent-cancel") return Promise.resolve({});
+    if (++calls === 1) return new Promise((_, reject) => { failFirst = reject; });
+    return Promise.resolve({ accepted: true, replayed: true });
+  };
+  const first = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  exchange.abandon("aaaaaaaaaaaa", "r1");
+  let retrySettled = false;
+  const retry = exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" }).then((value) => { retrySettled = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  failFirst(Object.assign(new Error("ack lost"), { code: "EXT_TIMEOUT" }));
+  void first; // its caller already left
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(retrySettled, false);
+  exchange.ingest(message("r2", 2));
+  assert.equal((await retry).next.id, "r2");
+});
+
+test("done for an ID whose caller was killed waits for the end instead of replaying the old receipt", { timeout: 5000 }, async (t) => {
+  const { ext, exchange } = setup(t);
+  ext.request = async (_endpoint, request) => {
+    // Like extension #25: cancel issues a new request; a done for the
+    // cancelled ID is accepted and the turn ends after the acknowledgement.
+    if (request.method === "agent-cancel") exchange.ingest(message("r2", 2));
+    if (request.params.decision?.kind === "done")
+      setImmediate(() => ext.emit("agent-turn-end", { endpointId: "aaaaaaaaaaaa", taskId: "task", status: "done" }));
+    return { accepted: true };
+  };
+  void exchange.respond("aaaaaaaaaaaa", "r1", { kind: "actions" });
+  await new Promise((resolve) => setImmediate(resolve));
+  exchange.abandon("aaaaaaaaaaaa", "r1"); // decision.js killed
+  await new Promise((resolve) => setImmediate(resolve));
+  const done = await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "final" });
+  assert.equal(done.finished, true);
+  assert.equal(done.replayed, undefined);
+});
+
+test("a retry the extension calls identical replays even when its key order differs", { timeout: 5000 }, async (t) => {
+  const { ext, exchange } = setup(t);
+  let calls = 0;
+  ext.request = async () => {
+    if (++calls === 1) { exchange.ingest(message("r2", 2)); return { accepted: true }; }
+    return { accepted: true, replayed: true };
+  };
+  assert.equal((await exchange.respond("aaaaaaaaaaaa", "r1", { kind: "done", text: "x" })).next.id, "r2");
+  const retry = await exchange.respond("aaaaaaaaaaaa", "r1", { text: "x", kind: "done" });
+  assert.equal(retry.replayed, true);
+  assert.equal(retry.next.id, "r2");
+});
