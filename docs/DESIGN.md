@@ -1,6 +1,6 @@
 # zylos-browser-remote Design Document
 
-**Version**: 0.9.0
+**Version**: 0.11.2
 **Repository**: https://github.com/zylos-ai/zylos-browser-remote
 **Status**: Active
 
@@ -281,3 +281,31 @@ handler escapes into the emitter and takes the relay process down with it.
 
 - Per-machine keys rather than one shared key across browsers, so that a
   single machine can be revoked independently.
+
+## 9. Upgrade record: upstream 0.11.0 → 0.11.2 (2026-11-20)
+
+1. **What changed.** `task.start` waits 20s (was 5s) for the extension and the
+   `/task/start` client waits 30s; `TASK_START_PAGE_TIMEOUT` and
+   `PAGE_UNAVAILABLE` now pass through instead of collapsing into the generic
+   `TASK_START_ERROR`. A `/decision` caller that exits no longer leaves the
+   request busy forever: the relay releases the waiter, sends `agent-cancel` to
+   the extension, keeps the request answerable so a retry of the same id gets the
+   late result, and `done`/`blocked` are forwarded for an in-flight request
+   (the replaced waiter returns `DECISION_SUPERSEDED`). Docs only otherwise.
+2. **Breaking changes.** None in the wire protocol version or the HTTP contract:
+   only an additive error code (`DECISION_SUPERSEDED`), a widened pass-through
+   set, and longer timeouts. The new behaviour is coupled to extension
+   **0.17.7+** for a complete #29 fix; older extensions simply reject the new
+   `agent-cancel` frame and the release path still holds.
+3. **Restart required.** Yes — PM2 process `zylos-browser-remote`
+   (`src/lib/*`, `scripts/relay-client.js` changed; no `ecosystem.config.cjs`
+   change). No browser extension reload on the relay side; the extension holds
+   the WebSocket, so reconnects once after the restart.
+4. **`.env` / config format.** Untouched. No new environment variables, no change
+   to `keys.json` or `config.json` shapes. Note: upstream PR #27's title advertises
+   `BROWSER_REMOTE_TASK_START_TIMEOUT_MS`, but the merged commit dropped the env
+   reader — the code default is a fixed 20000 exposed only as the
+   `taskStartTimeoutMs` constructor option, and `src/index.js` does not pass it,
+   so in production the value is not configurable without a code change.
+5. **Rollback.** Revert to tag `v0.11.0` and restart the same PM2 process; state on
+   disk is unchanged, so no migration or data fix-up is required.
