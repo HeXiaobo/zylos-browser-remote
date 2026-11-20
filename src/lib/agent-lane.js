@@ -24,6 +24,7 @@ class AgentLane {
     monitor = null,
     exchange = null,
     incidentEvidence = null,
+    taskStartTimeoutMs = TASK_START_TIMEOUT_MS,
   }) {
     this.ext = extLane;
     this.port = port;
@@ -31,6 +32,7 @@ class AgentLane {
     this.monitor = monitor;
     this.exchange = exchange;
     this.incidentEvidence = incidentEvidence;
+    this.taskStartTimeoutMs = taskStartTimeoutMs;
     this.server = http.createServer((req, res) => this._onHttp(req, res));
   }
 
@@ -69,11 +71,14 @@ class AgentLane {
         }
         let raw;
         try {
-          raw = await this.ext.request(target.endpointId, { method: "task.start", params, timeoutMs: TASK_START_TIMEOUT_MS });
+          raw = await this.ext.request(target.endpointId, { method: "task.start", params, timeoutMs: this.taskStartTimeoutMs });
         } catch (err) {
-          const code = ["EXT_OFFLINE", "EXT_TIMEOUT", "TASK_START_DISABLED", "TASK_START_CONFLICT", "TASK_START_REVOKED", "TASK_START_UNSUPPORTED", "BAD_PARAMS"].includes(err.code) ? err.code : "TASK_START_ERROR";
+          const code = ["EXT_OFFLINE", "EXT_TIMEOUT", "TASK_START_DISABLED", "TASK_START_CONFLICT", "TASK_START_REVOKED", "TASK_START_UNSUPPORTED", "TASK_START_PAGE_TIMEOUT", "PAGE_UNAVAILABLE", "BAD_PARAMS"].includes(err.code) ? err.code : "TASK_START_ERROR";
+          const notStarted = code === "TASK_START_PAGE_TIMEOUT" || code === "PAGE_UNAVAILABLE";
           return fail(RELAY_ERROR_STATUS[code] || (code === "BAD_PARAMS" ? 400 : code === "TASK_START_ERROR" ? 502 : 409), code,
-            "Task start failed or outcome is unknown; do not retry automatically");
+            notStarted
+              ? "Task did not start: the start page did not load and its tab was closed; do not retry automatically"
+              : "Task start failed or outcome is unknown; do not retry automatically");
         }
         try { return reply(200, { ok: true, endpointId: target.endpointId, ...taskStartResult(raw, params.requestId) }); }
         catch { return fail(502, "BAD_TASK_START_RESPONSE", "Invalid task start response; outcome is unknown"); }
@@ -185,15 +190,19 @@ class AgentLane {
             "BAD_REQUEST",
             "id and a structured decision are required",
           );
-        return reply(
-          200,
-          await this.exchange.respond(
-            target.endpointId,
-            body.id,
-            body.decision,
-            body.inputId,
-          ),
+        // A client that exits (timeout, kill) must not leave the decision busy.
+        let answered = false;
+        res.on("close", () => {
+          if (!answered) this.exchange.abandon(target.endpointId, body.id);
+        });
+        const result = await this.exchange.respond(
+          target.endpointId,
+          body.id,
+          body.decision,
+          body.inputId,
         );
+        answered = true;
+        return reply(200, result);
       }
 
       return fail(404, "NOT_FOUND", "not found");

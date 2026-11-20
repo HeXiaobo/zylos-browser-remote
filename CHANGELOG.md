@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-19
+
+Requires zylos-browser-extension 0.17.7 or later for a complete fix of #29 (upgrade both together).
+
+### Fixed
+- A decision no longer stays busy forever when its caller gives up (#29): when the
+  `/decision` HTTP client exits, the relay releases the waiter, sends
+  `agent-cancel` to the extension, and keeps the request answerable so a retry
+  of the same ID gets a late result.
+- `done`/`blocked` for a request that is still executing are forwarded instead
+  of returning `DECISION_BUSY`, so the agent can always close the task; the
+  replaced waiter returns `DECISION_SUPERSEDED`.
+
+## [0.11.1] - 2026-11-19
+
+### Fixed
+- `task.start` waits 20 seconds for the extension instead of 5, so a page that
+  loads in 5–10 seconds no longer returns a false `EXT_TIMEOUT`; the
+  `/task/start` client waits 30 seconds.
+- `TASK_START_PAGE_TIMEOUT` and `PAGE_UNAVAILABLE` from the extension are passed
+  through instead of the generic `TASK_START_ERROR`; both mean the task did not
+  start.
+
+### Docs
+- SKILL and proactive-start: for slow pages, start on a light page of the same
+  origin and name the authorized target URL in the prompt.
+
 ## [0.11.0] - 2026-11-18
 
 ### Added
